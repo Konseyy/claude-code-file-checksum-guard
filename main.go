@@ -1,3 +1,7 @@
+// Claude Code hook that blocks edits to files modified externally since Claude last read them.
+// Invoked as: echo '<json>' | file-checksum-guard store   (after a read)
+//
+//	echo '<json>' | file-checksum-guard verify  (before an edit)
 package main
 
 import (
@@ -12,6 +16,7 @@ import (
 
 const checksumDir = "/tmp/claude-file-checksums"
 
+// Struct tags (`json:"..."`) tell the JSON parser which keys map to which fields.
 type ToolInput struct {
 	FilePath string `json:"file_path"`
 }
@@ -36,11 +41,15 @@ func fileChecksum(path string) (string, error) {
 	if _, err := io.Copy(h, f); err != nil {
 		return "", err
 	}
+	// h.Sum(nil) finalizes the hash and returns raw bytes.
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// Hashes the file *path* itself to produce a safe flat filename for storage.
 func checksumKeyPath(filePath string) string {
 	h := sha256.Sum256([]byte(filePath))
+	// `h[:]` converts the fixed-size array ([32]byte) to a slice ([]byte).
+	// Go distinguishes between arrays (fixed-size) and slices (dynamic).
 	return filepath.Join(checksumDir, hex.EncodeToString(h[:]))
 }
 
@@ -70,7 +79,7 @@ func verify(filePath string) (blocked bool, reason string) {
 
 	current, err := fileChecksum(filePath)
 	if err != nil {
-		return false, "" // can't read file, let the tool handle the error
+		return false, "" // can't read file, the tool will also fail to read it, so no need to block here
 	}
 
 	if string(stored) != current {
@@ -98,6 +107,7 @@ func main() {
 		os.Exit(1)
 	}
 
+	// `&payload` passes a pointer so Unmarshal can mutate the struct in place.
 	var payload HookPayload
 	if err := json.Unmarshal(input, &payload); err != nil {
 		fmt.Fprintln(os.Stderr, "failed to parse JSON:", err)
@@ -118,9 +128,11 @@ func main() {
 
 	case "verify":
 		if blocked, reason := verify(filePath); blocked {
+			// `_` discards the error from Marshal — safe here since
+			// BlockResponse is a trivial struct that can't fail to serialize.
 			resp, _ := json.Marshal(BlockResponse{Reason: reason})
 			fmt.Println(string(resp))
-			os.Exit(2)
+			os.Exit(2) // exit code 2 = "block this tool call" in Claude Code hooks
 		}
 
 	default:
